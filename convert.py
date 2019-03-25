@@ -53,7 +53,7 @@ def get_mrc_files(input_directory, average=True, shift=False):
     mrc_ind = [ind[0]+ind[1]*max_x+ind[2]*max_x*max_y for ind in mrc_ind]  # in order based on x,y and fp
     index = sorted(range(len(mrc_ind)), key=lambda k: mrc_ind[k])
     # getting the size of the MRC files
-    with mrcfile.open(mrc_files[0], permissive=True) as first: # permissive as format is incorrect
+    with mrcfile.open(mrc_files[0], permissive=True) as first:  # permissive as format is incorrect
         image_size = np.shape(first.data)
     image_data = np.zeros(((len(mrc_files),) + image_size), dtype=np.float32)
     # loading .mrc files
