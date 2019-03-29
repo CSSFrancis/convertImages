@@ -1,13 +1,15 @@
 #!/usr/bin/python
 
 import sys, getopt
-import mrcfile
 import os
 import glob
 import re
 import numpy as np
 import hyperspy.api as hs
 import argparse
+import scipy
+import dask
+import matplotlib.pyplot as plt
 
 
 # This program takes the prismatic outputs and then does a fft shift to reshape the matrix as well as
@@ -43,58 +45,51 @@ def read_param_file(file):
 
 
 def get_mrc_files(input_directory, average=True, shift=False):
-    mrc_files = glob.glob(input_directory + "/*_X*_Y*.mrc")  # get only inverse space images
+    mrc_files = np.array(glob.glob(input_directory + "/*_X*_Y*.mrc"))  # get only inverse space images
     # get positions and phonon number
     mrc_ind = np.array([[re.search('_X(\d+)', f).group(1),
                          re.search('_Y(\d+)', f).group(1),
-                         int(re.search('_FP(\d+)', f).group(1))-1] for f in mrc_files], dtype=int)
+                         int(re.search('_FP(\d+)', f).group(1))] for f in mrc_files], dtype=int)
     # for indexing the files based on the output
-    max_x, max_y, max_fp = max(list(zip(*mrc_ind))[0]),max(list(zip(*mrc_ind))[1]), max(list(zip(*mrc_ind))[2])
+    max_x, max_y, max_fp = max(list(zip(*mrc_ind))[0])+1,max(list(zip(*mrc_ind))[1])+1, max(list(zip(*mrc_ind))[2])
     mrc_ind = [ind[0]+ind[1]*max_x+ind[2]*max_x*max_y for ind in mrc_ind]  # in order based on x,y and fp
+    print(mrc_ind)
     index = sorted(range(len(mrc_ind)), key=lambda k: mrc_ind[k])
-    # getting the size of the MRC files
-    with mrcfile.open(mrc_files[0], permissive=True) as first:  # permissive as format is incorrect
-        image_size = np.shape(first.data)
-    image_data = np.zeros(((len(mrc_files),) + image_size), dtype=np.float32)
-    # loading .mrc files
-    for i, file in enumerate(mrc_files):
-        with mrcfile.open(file, permissive=True) as mrc:  # permissive as format is incorrect
-            image_data[i] = mrc.data
-    # shifting zero frequency component to the center
-    if shift:
-        np.fft.fftshift(image_data, axes=(-2, -1))
-    # creating 5-d array(x,y,fp,kx,ky)
-    image_data = image_data[index]
-    image_data = np.reshape(image_data, (max_x+1, max_y+1, max_fp+1)+image_size)
-    # averaging over phonon frequencies
-    if average:
-        image_data = np.mean(image_data, axis=2)
-    return image_data
+    print(index)
+    mrc_files = mrc_files[index]  # ordering the mrc files based on FP, Y and X
+    mrc_files = mrc_files.reshape(max_fp, max_y,max_x).tolist()
+    stacked_signals = []
+    for fp in mrc_files:
+        y_stack = []
+        for y in fp:
+            y_stack.append(hs.load(filenames=y, stack=True, new_axis_name='Real_x', lazy=True))
+        stacked_signals.append(hs.stack(y_stack, new_axis_name='Real_y'))
+        print('Y')
+    signal = hs.stack(stacked_signals, new_axis_name='frozen_phonon').squeeze().mean(axis=2)
+    return signal
 
 
-def beam_convolution(image_data, pixel_size, beamsize):
-    sigma = ((beamsize/pixel_size)/2.355)  # fwhm of gaussian
-    data_shape = np.shape(image_data)
-    fkernel = np.fft.fft2(gaussKernel(sigma, data_shape[0]))
-    data_shape = np.shape(image_data)
-    result = np.zeros(data_shape)
-    # if you don't want to average frozen phonons... Not debugged
-    if len(data_shape) == 5:
-        fp_size, kx_size, ky_size = data_shape[-3, -2, -1]
-        for p in range(fp_size):
-            for k in range(kx_size):
-                for l in range(ky_size):
-                    result[:, :, k, l, p] = np.fft.fftshift(np.fft.ifft2(fkernel * np.fft.fft2(image_data[:, :, k, l, p]))).real
+def beam_convolution(signal, pixel_size, beamsize):
+    print(signal.data)
+    signal = signal.transpose(optimize=True)
+    sigma = ((beamsize/pixel_size)/2.355)
+    real_space = signal.axes_manager.signal_axes[0].size
+    print(real_space)
+    fkernel = np.fft.fft2(gaussKernel(sigma, real_space))
+    print('here')
+    print(signal.axes_manager)
+    print(signal.data)
+    print(signal.data[1,1,:,:])
+    convolve(signal.data[1,1,:,:], fkernel)
+    signal.map(convolve, inplace=True, ragged=False, gaussian=fkernel)
+    signal = signal.transpose(optimize=True)
+    return signal
 
-    else:
-        kx_size, ky_size = data_shape[-2], data_shape[-1]
-        darkfield_image = np.moveaxis(image_data, [-1,-2], [0,1])
-        transform = np.fft.fftshift(np.fft.ifft2(np.multiply(fkernel, np.fft.fft2(darkfield_image, axes=(-1,-2))))).real
-        result = np.moveaxis(transform, [-1,-2], [0,1])
-        outside_mask_kx = data_shape[-2]//4
-        outside_mask_ky = data_shape[-1] // 4
-        result = result[:, :,outside_mask_kx:outside_mask_kx*3,outside_mask_ky:outside_mask_ky*3]
-    return result
+
+def convolve(array, gaussian):
+    a = dask.array.fft.ifft2(gaussian * dask.array.fft.fft2(array))
+    a = dask.array.fft.fftshift(a).real
+    print(np.shape(a))
 
 
 def gaussKernel(sigma, imsize):
@@ -111,11 +106,11 @@ def gaussKernel(sigma, imsize):
     return (1/(2*np.pi*sigma**2))*np.exp(tmp)
 
 
-def repackage(input_directory, out_put_filename, parameter_file,beamsize, convolve=True):
+def repackage(input_directory, parameter_file, out_put_filename='out', beamsize=2, convolve=True):
     x_pix, y_pix, cell_dim, tile_values, real_scale_x, real_scale_y = read_param_file(parameter_file)
-    data = get_mrc_files(input_directory, average=True,shift=False)
-    data_shape = np.shape(data)
-    # number of pixels is equal to "real-space dimensions"/pixel-size
+    data = get_mrc_files(input_directory, average=True, shift=False)
+    print(data)
+    # number of pixels is equal to "real-space dimensions"\pixel-size
     # so the scale in reciprocal space is 1/dimensions
     kx_scale = 1 / ((cell_dim[0] / 10) * tile_values[0])
     ky_scale = 1 / ((cell_dim[1] / 10) * tile_values[1])
