@@ -1,10 +1,10 @@
 from unittest import TestCase
 import hyperspy.api as hs
 import matplotlib.pyplot as plt
-from convert_tiff import read_param_file, get_tif_files
 from convert import get_mrc_files,repackage,convolve, gaussKernel
 import numpy as np
 import time
+
 
 
 class TestPolarSignal(TestCase):
@@ -22,3 +22,12 @@ class TestPolarSignal(TestCase):
 
     def test_power(self):
         self.signal_2.map(convolve,inplace=True, ragged=False, gaussian=self.kernel1, show_progressbar=True)
+
+
+class Test_read_emi(TestCase):
+    def setUp(self):
+        self.input_file = '/media/hdd/home/HighTDatasets/Zr65Cu27.5Al7.5_1.19nmpsec(300W_3.8mT_170C_13sec)/1.19nmParameters.txt'
+
+    def test_read(self):
+        p = read_param_file(self.input_file)
+        print(p)

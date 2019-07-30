@@ -117,7 +117,7 @@ def get_tif_files(input_directory, rows=None, columns=None, binning_factor=1):
     image_data = np.zeros(((len(tif_files),) + image_size), dtype=np.float32)  # preallocate space
     for i, file in enumerate(tif_files):
         with Image.open(file) as tif:  # permissive as format is incorrect
-            image_data[i] = bin_2d(np.array(tif),binning_factor)
+            image_data[i] = bin_2d(np.array(tif), binning_factor)
     # shifting zero frequency component to the center
 
     # creating reformatting everything
@@ -129,7 +129,7 @@ def get_tif_files(input_directory, rows=None, columns=None, binning_factor=1):
 
 def repackage(input_directory, output_filename, parameter_file, binning_factor=1):
     metadata = read_param_file(parameter_file)
-    image_data = get_tif_files(input_directory, metadata['rows'], metadata['columns'],binning_factor=binning_factor)
+    image_data = get_tif_files(input_directory, metadata['rows'], metadata['columns'], binning_factor=binning_factor)
     data_shape = np.shape(image_data)
 
 
